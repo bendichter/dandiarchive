@@ -28,7 +28,6 @@
           <v-col>
             <DandisetMain
               :schema="schema"
-              :meta="meta"
               @edit="edit = true"
             />
           </v-col>

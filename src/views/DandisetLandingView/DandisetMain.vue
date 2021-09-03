@@ -239,10 +239,6 @@ export default defineComponent({
       type: Object,
       required: true,
     },
-    meta: {
-      type: Object,
-      required: true,
-    },
   },
   setup() {
     const currentDandiset = computed(() => store.state.dandiset.publishDandiset);
@@ -278,6 +274,11 @@ export default defineComponent({
       shortenedDescription = `${shortenedDescription.substring(0, shortenedDescription.lastIndexOf(' '))}...`;
       return shortenedDescription;
     });
+    const meta: ComputedRef<DandisetMetadata|undefined> = computed(
+      () => currentDandiset.value.metadata,
+    );
+
+    const currentTab: Ref<string> = ref('');
 
     function formatDate(date: string): string {
       return moment(date).format('LL');
@@ -294,6 +295,7 @@ export default defineComponent({
 
       currentTab,
       tabs,
+      meta,
     };
   },
 });
