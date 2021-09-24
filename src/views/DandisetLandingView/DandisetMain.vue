@@ -251,8 +251,6 @@ export default defineComponent({
       return { asset_count, size };
     });
 
-    const currentTab = ref(0);
-
     // whether or not the "see more" button has been pressed to reveal
     // the full description
     const showFullDescription = ref(false);
@@ -274,11 +272,9 @@ export default defineComponent({
       shortenedDescription = `${shortenedDescription.substring(0, shortenedDescription.lastIndexOf(' '))}...`;
       return shortenedDescription;
     });
-    const meta: ComputedRef<DandisetMetadata|undefined> = computed(
-      () => currentDandiset.value.metadata,
-    );
+    const meta = computed(() => currentDandiset.value?.metadata);
 
-    const currentTab: Ref<string> = ref('');
+    const currentTab = ref('');
 
     function formatDate(date: string): string {
       return moment(date).format('LL');
