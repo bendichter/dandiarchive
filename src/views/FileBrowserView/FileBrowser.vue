@@ -1,6 +1,6 @@
 <template>
   <v-progress-linear
-    v-if="!publishDandiset"
+    v-if="!currentDandiset"
     indeterminate
   />
   <v-container v-else>
@@ -83,7 +83,7 @@
             </span>
           </v-card-title>
           <v-progress-linear
-            v-if="$asyncComputed.items.updating"
+            v-if="updating"
             indeterminate
           />
           <v-divider v-else />
@@ -204,15 +204,21 @@
   </v-container>
 </template>
 
-<script>
+<script lang="ts">
 import filesize from 'filesize';
+import {
+  defineComponent, computed, ref, watchEffect, Ref,
+} from '@vue/composition-api';
+
 import { publishRest } from '@/rest';
 import store from '@/store';
+import { draftVersion } from '@/utils/constants';
+import { AssetStats } from '@/types';
 
 const parentDirectory = '..';
 const rootDirectory = '';
 
-const sortByName = (a, b) => {
+const sortByName = (a: any, b: any) => {
   if (a.name > b.name) {
     return 1;
   }
@@ -238,8 +244,8 @@ const EXTERNAL_SERVICES = [
   },
 ];
 
-export default {
-  name: 'PublishFileBrowser',
+export default defineComponent({
+  name: 'FileBrowser',
   props: {
     identifier: {
       type: String,
@@ -250,158 +256,123 @@ export default {
       required: true,
     },
   },
-  data() {
-    return {
-      rootDirectory,
-      location: rootDirectory,
-      owners: [],
-      itemToDelete: null,
-    };
-  },
-  computed: {
-    splitLocation() {
-      return this.location.split('/');
-    },
+  setup(props) {
+    const location = ref(rootDirectory);
+    const owners: Ref<string[]> = ref([]);
+    const itemToDelete = ref(null);
+    const updating = ref(false);
 
-    me() {
-      return publishRest.user ? publishRest.user.username : null;
-    },
+    const currentDandiset = computed(() => store.state.dandiset.publishDandiset);
+    const splitLocation = computed(() => location.value.split('/'));
 
-    isAdmin() {
-      return this.me && publishRest.user.admin;
-    },
+    const items: Ref<AssetStats[]|null> = ref(null);
 
-    isOwner() {
-      return this.me && this.owners.includes(this.me);
-    },
+    async function getAssets() {
+      const { version, identifier } = props;
 
-    publishDandiset() {
-      return store.state.dandiset.publishDandiset;
-    },
-  },
-  asyncComputed: {
-    items: {
-      async get() {
-        const { version, identifier, location } = this;
+      const data = await publishRest.assetPaths(identifier, version, location.value);
+      owners.value = (await publishRest.owners(identifier)).data
+        .map((x) => x.username);
 
-        const data = await publishRest.assetPaths(identifier, version, location);
-        this.owners = (await publishRest.owners(identifier)).data
-          .map((x) => x.username);
-
-        return [
-          ...location !== rootDirectory ? [{ name: parentDirectory, folder: true }] : [],
-          ...Object.keys(data.folders).map(
-            (key) => ({ ...data.folders[key], name: `${key}/`, folder: true }),
-          ).sort(sortByName),
-          ...Object.keys(data.files).map(
-            (key) => {
-              const { asset_id, size } = data.files[key];
-              const services = this.getExternalServices(asset_id, key, size);
-              return {
-                ...data.files[key],
-                name: key,
-                folder: false,
-                services,
-              };
-            },
-          ).sort(sortByName),
-        ];
-      },
-      default: null,
-    },
-  },
-  watch: {
-    location(location) {
-      const { location: existingLocation } = this.$route.query;
-
-      // Update route when location changes
-      if (existingLocation === location) { return; }
-      this.$router.push({
-        ...this.$route,
-        query: { location },
-      });
-    },
-    items(items) {
-      if (items && !items.length) {
-        // If the API call returns no items, go back to the root (shouldn't normally happen)
-        this.location = rootDirectory;
-      }
-    },
-    $route: {
-      immediate: true,
-      handler(route) {
-        this.location = route.query.location || rootDirectory;
-      },
-    },
-  },
-  async created() {
-    // Don't extract publishDandiset, for reactivity
-    const { identifier, version } = this;
-    if (!this.publishDandiset) {
-      this.fetchPublishDandiset({ identifier, version });
+      items.value = [
+        ...location.value !== rootDirectory ? [{ name: parentDirectory, folder: true }] : [],
+        ...Object.keys(data.folders).map(
+          (key) => ({ ...data.folders[key], name: `${key}/`, folder: true }),
+        ).sort(sortByName),
+        ...Object.keys(data.files).map(
+          (key) => {
+            const { asset_id, size } = data.files[key];
+            return {
+              ...data.files[key],
+              name: key,
+              folder: false,
+              services: EXTERNAL_SERVICES
+                .filter((service) => new RegExp(service.regex).test(key) && size <= service.maxsize)
+                .map((service) => ({
+                  name: service.name,
+                  url: `${service.endpoint}${publishRest.assetDownloadURI(identifier, version, asset_id)}`,
+                })),
+            };
+          },
+        ).sort(sortByName),
+      ];
     }
-  },
-  methods: {
-    locationSlice(index) {
-      return `${this.splitLocation.slice(0, index + 1).join('/')}/`;
-    },
 
-    selectPath(item) {
+    watchEffect(async () => {
+      updating.value = true;
+      await getAssets();
+      updating.value = false;
+    }, { flush: 'sync' });
+
+    function downloadURI(asset_id: string): string {
+      return publishRest.assetDownloadURI(props.identifier, props.version, asset_id);
+    }
+
+    function selectPath(item: any) {
       const { name, folder } = item;
 
       if (!folder) { return; }
       if (name === parentDirectory) {
-        const slicedLocation = this.location.split('/').slice(0, -2);
-        this.location = slicedLocation.length ? `${slicedLocation.join('/')}/` : '';
+        const slicedLocation = location.value.split('/').slice(0, -2);
+        location.value = slicedLocation.length ? `${slicedLocation.join('/')}/` : '';
       } else {
-        this.location = `${this.location}${name}`;
+        location.value = `${location.value}${name}`;
       }
-    },
+    }
 
-    downloadURI(asset_id) {
-      return publishRest.assetDownloadURI(this.identifier, this.version, asset_id);
-    },
+    function locationSlice(index: number): string {
+      return `${splitLocation.value.slice(0, index + 1).join('/')}/`;
+    }
 
-    getExternalServices(asset_id, name, size) {
-      const { identifier, version } = this;
-      return EXTERNAL_SERVICES
-        .filter((service) => new RegExp(service.regex).test(name) && size <= service.maxsize)
-        .map((service) => ({
-          name: service.name,
-          url: `${service.endpoint}${publishRest.assetDownloadURI(identifier, version, asset_id)}`,
-        }));
-    },
+    function assetMetadataURI(asset_id: string): string {
+      return publishRest.assetMetadataURI(props.identifier, props.version, asset_id);
+    }
 
-    assetMetadataURI(asset_id) {
-      return publishRest.assetMetadataURI(this.identifier, this.version, asset_id);
-    },
-
-    fileSize(item) {
+    function fileSize(item: any): string {
       return filesize(item.size, { round: 1, base: 10, standard: 'iec' });
-    },
+    }
 
-    showDelete(item) {
-      return this.version === 'draft' && !item.folder && (this.isAdmin || this.isOwner);
-    },
+    function showDelete(item: any): boolean {
+      return props.version === draftVersion
+      && !item.folder
+      && !!(publishRest.user?.admin || (
+        publishRest.user && owners.value.includes(publishRest.user?.username)));
+    }
 
-    async deleteAsset(item) {
+    async function deleteAsset(item: any) {
       const { asset_id } = item;
       if (asset_id !== undefined) {
         // Delete the asset on the server.
-        await publishRest.deleteAsset(this.identifier, this.version, asset_id);
-
-        // Recompute the items to display in the browser.
-        this.$asyncComputed.items.update();
+        await publishRest.deleteAsset(props.identifier, props.version, asset_id);
+        updating.value = true;
+        await getAssets();
+        updating.value = false;
       }
-      this.itemToDelete = null;
-    },
+      itemToDelete.value = null;
+    }
 
-    fetchPublishDandiset() {
+    if (!currentDandiset.value) {
       store.dispatch.dandiset.fetchPublishDandiset({
-        identifier: this.identifier,
-        version: this.version,
+        identifier: props.identifier,
+        version: props.version,
       });
-    },
+    }
+
+    return {
+      deleteAsset,
+      showDelete,
+      fileSize,
+      assetMetadataURI,
+      locationSlice,
+      selectPath,
+      downloadURI,
+      currentDandiset,
+      itemToDelete,
+      rootDirectory,
+      splitLocation,
+      updating,
+      items,
+    };
   },
-};
+});
 </script>
